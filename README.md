@@ -22,7 +22,7 @@
 
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone https://github.com/venti1112/mcserver_manager.git
 cd mcserver_manager
 
 # 安装依赖
