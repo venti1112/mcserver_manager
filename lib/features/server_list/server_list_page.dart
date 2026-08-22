@@ -210,6 +210,13 @@ class _ServerCard extends StatelessWidget {
     required this.onDelete,
   });
 
+  /// 根据 TPS 值返回状态颜色：≥16 流畅（绿），≥10 略低（橙），否则卡顿（红）。
+  static Color _tpsColor(double tps) {
+    if (tps >= 16) return Colors.green;
+    if (tps >= 10) return Colors.orange;
+    return Colors.red;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -244,9 +251,19 @@ class _ServerCard extends StatelessWidget {
                     Text(server.name, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Text('${server.host}:${server.port}', style: theme.textTheme.bodySmall),
-                    if (isOnline && status?.latencyMs != null) ...[
+                    if (isOnline && status != null) ...[
                       const SizedBox(height: 2),
-                      Text('${status!.latencyMs}ms', style: theme.textTheme.labelSmall?.copyWith(color: Colors.green)),
+                      Row(
+                        children: [
+                          Text('${status!.latencyMs}ms',
+                              style: theme.textTheme.labelSmall?.copyWith(color: Colors.green)),
+                          if (status!.tps != null) ...[
+                            const SizedBox(width: 8),
+                            Text('TPS ${status!.tps!.toStringAsFixed(1)}',
+                                style: theme.textTheme.labelSmall?.copyWith(color: _tpsColor(status!.tps!))),
+                          ],
+                        ],
+                      ),
                     ],
                   ],
                 ),

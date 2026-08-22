@@ -16,6 +16,8 @@ class _PlayerListPageState extends State<PlayerListPage> {
   List<PlayerInfo>? _players;
   bool _loading = true;
   String? _error;
+  bool _selecting = false;
+  final Set<String> _selected = {};
 
   @override
   void initState() {
@@ -76,6 +78,79 @@ class _PlayerListPageState extends State<PlayerListPage> {
     }
   }
 
+  /// 进入批量选择模式。
+  void _enterSelection() {
+    setState(() {
+      _selecting = true;
+      _selected.clear();
+    });
+  }
+
+  /// 退出批量选择模式。
+  void _exitSelection() {
+    setState(() {
+      _selecting = false;
+      _selected.clear();
+    });
+  }
+
+  /// 在批量选择模式下勾选/取消某个玩家。
+  void _toggleSelect(String name) {
+    setState(() {
+      if (!_selected.add(name)) _selected.remove(name);
+    });
+  }
+
+  static const _actionLabels = {
+    'op': '给予OP',
+    'deop': '取消OP',
+    'kick': '踢出',
+    'ban': '封禁',
+  };
+
+  /// 对选中的所有玩家执行批量操作。
+  Future<void> _handleBatch(String action) async {
+    final names = (_players ?? [])
+        .where((p) => _selected.contains(p.name))
+        .map((p) => p.name)
+        .toList();
+    if (names.isEmpty) return;
+
+    String? reason;
+    if (action == 'kick' || action == 'ban') {
+      reason = await _showReasonDialog(_actionLabels[action]!, '${names.length}名玩家');
+      if (reason == null) return; // 用户取消
+    }
+
+    var success = 0;
+    var fail = 0;
+    for (final name in names) {
+      try {
+        switch (action) {
+          case 'op':
+            await _service.opPlayer(name);
+          case 'deop':
+            await _service.deopPlayer(name);
+          case 'kick':
+            await _service.kickPlayer(name, reason: reason ?? '');
+          case 'ban':
+            await _service.banPlayer(name, reason: reason ?? '');
+        }
+        success++;
+      } catch (_) {
+        fail++;
+      }
+    }
+    if (!mounted) return;
+    final label = _actionLabels[action]!;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$label完成：成功 $success 人${fail > 0 ? '，失败 $fail 人' : ''}'),
+      duration: const Duration(seconds: 2),
+    ));
+    await _load();
+    if (mounted) setState(() => _selected.clear());
+  }
+
   /// 展示操作确认框并允许填写原因，返回原因字符串；取消则返回 null。
   Future<String?> _showReasonDialog(String actionLabel, String player) async {
     final controller = TextEditingController();
@@ -118,8 +193,31 @@ class _PlayerListPageState extends State<PlayerListPage> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('玩家管理'),
+        leading: _selecting
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: '退出选择',
+                onPressed: _exitSelection,
+              )
+            : null,
+        title: Text(_selecting ? '已选 ${_selected.length} 人' : '玩家管理'),
         actions: [
+          if (_selecting) ...[
+            IconButton(
+              icon: const Icon(Icons.select_all),
+              tooltip: '全选',
+              onPressed: () {
+                setState(() => _selected
+                  ..clear()
+                  ..addAll((_players ?? []).map((p) => p.name)));
+              },
+            ),
+          ] else
+            IconButton(
+              icon: const Icon(Icons.checklist_outlined),
+              tooltip: '批量操作',
+              onPressed: _loading ? null : _enterSelection,
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: '刷新',
@@ -128,6 +226,44 @@ class _PlayerListPageState extends State<PlayerListPage> {
         ],
       ),
       body: _buildBody(theme),
+      bottomNavigationBar: _selecting ? _buildBatchBar(theme) : null,
+    );
+  }
+
+  /// 批量操作底部工具栏。
+  Widget _buildBatchBar(ThemeData theme) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _buildBatchButton('op', Icons.admin_panel_settings_outlined, '给予OP', Colors.green),
+            _buildBatchButton('deop', Icons.remove_moderator_outlined, '取消OP', Colors.orange),
+            _buildBatchButton('kick', Icons.logout, '踢出', Colors.blue),
+            _buildBatchButton('ban', Icons.block, '封禁', Colors.red),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBatchButton(String action, IconData icon, String label, Color color) {
+    final disabled = _selected.isEmpty;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: Icon(icon),
+          color: disabled ? null : color,
+          tooltip: label,
+          onPressed: disabled ? null : () => _handleBatch(action),
+        ),
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: disabled ? null : color),
+        ),
+      ],
     );
   }
 
@@ -159,32 +295,42 @@ class _PlayerListPageState extends State<PlayerListPage> {
         separatorBuilder: (_, __) => const SizedBox(height: 8),
         itemBuilder: (_, i) {
           final p = players[i];
+          final selected = _selected.contains(p.name);
           return ListTile(
-            leading: CircleAvatar(
-              child: Text(p.name.isNotEmpty ? p.name[0].toUpperCase() : '?'),
-            ),
+            leading: _selecting
+                ? Checkbox(
+                    value: selected,
+                    onChanged: (_) => _toggleSelect(p.name),
+                  )
+                : CircleAvatar(
+                    child: Text(p.name.isNotEmpty ? p.name[0].toUpperCase() : '?'),
+                  ),
             title: Text(p.name, style: theme.textTheme.titleMedium),
             subtitle: p.uuid.isEmpty ? null : Text(p.uuid, style: theme.textTheme.bodySmall),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (p.isOp)
-                  Chip(
-                    label: const Text('OP'),
-                    visualDensity: VisualDensity.compact,
+            selected: selected,
+            onTap: _selecting ? () => _toggleSelect(p.name) : null,
+            trailing: _selecting
+                ? const SizedBox.shrink()
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (p.isOp)
+                        Chip(
+                          label: const Text('OP'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      PopupMenuButton<String>(
+                        tooltip: '操作',
+                        onSelected: (action) => _handleAction(p, action),
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(value: 'op', child: Text('给予 OP')),
+                          const PopupMenuItem(value: 'deop', child: Text('取消 OP')),
+                          const PopupMenuItem(value: 'kick', child: Text('踢出')),
+                          const PopupMenuItem(value: 'ban', child: Text('封禁')),
+                        ],
+                      ),
+                    ],
                   ),
-                PopupMenuButton<String>(
-                  tooltip: '操作',
-                  onSelected: (action) => _handleAction(p, action),
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(value: 'op', child: Text('给予 OP')),
-                    const PopupMenuItem(value: 'deop', child: Text('取消 OP')),
-                    const PopupMenuItem(value: 'kick', child: Text('踢出')),
-                    const PopupMenuItem(value: 'ban', child: Text('封禁')),
-                  ],
-                ),
-              ],
-            ),
           );
         },
       ),

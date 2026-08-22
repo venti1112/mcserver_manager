@@ -32,8 +32,13 @@ class RconProvider extends ChangeNotifier {
     final stopwatch = Stopwatch()..start();
     try {
       final client = await getClient(server);
-      final playerInfo = await client.executeCommand('list');
+      // 并行查询在线列表与 TPS（RCON 通过 requestId 区分响应）
+      final results = await Future.wait<String?>([
+        client.executeCommand('list'),
+        client.executeCommand('tps').catchError((_) => null),
+      ]);
       stopwatch.stop();
+      final playerInfo = results[0];
       // 执行超时返回 null，视为服务器不可达
       if (playerInfo == null) {
         return ServerStatus(online: false, latencyMs: stopwatch.elapsedMilliseconds);
@@ -42,6 +47,7 @@ class RconProvider extends ChangeNotifier {
         online: true,
         latencyMs: stopwatch.elapsedMilliseconds,
         playerInfo: playerInfo,
+        tps: _parseTps(results[1]),
       );
     } catch (_) {
       stopwatch.stop();
@@ -69,7 +75,8 @@ class ServerStatus {
   final bool online;
   final int latencyMs;
   final String? playerInfo;
-  ServerStatus({required this.online, this.latencyMs = 0, this.playerInfo});
+  final double? tps;
+  ServerStatus({required this.online, this.latencyMs = 0, this.playerInfo, this.tps});
 
   /// 从 `list` 返回中解析在线玩家数量。
   /// 如「当前共有0名玩家在线（最大玩家数为20）：」或「There are 0 of a max of 20 players online:」，
@@ -81,4 +88,19 @@ int _parseOnlineCount(String? info) {
   if (info == null) return 0;
   final match = RegExp(r'\d+').firstMatch(info);
   return int.tryParse(match?.group(0) ?? '') ?? 0;
+}
+
+/// 从 `tps` 命令返回中解析 TPS 数值。
+/// 常见输出如「TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0」，
+/// 取第一个数字（1 分钟均值）；无法解析返回 null。
+double? _parseTps(String? info) {
+  if (info == null) return null;
+  final cleaned = stripMinecraftCodes(info);
+  // 匹配浮点数；排除紧跟字母的数字（如 "1m" 中的 1）
+  final match = RegExp(r'\d+(?:\.\d+)?(?![\d.a-zA-Z])').firstMatch(cleaned);
+  if (match == null) return null;
+  final tps = double.tryParse(match.group(0)!);
+  if (tps == null) return null;
+  // TPS 理论范围 0~20，超出视为解析异常
+  return tps.clamp(0, 20);
 }
